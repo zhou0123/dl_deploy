@@ -12,13 +12,8 @@ except ImportError:
     thop = None
 
 from models.common import *
+from utils.utils import *
 
-
-def make_divisible(x, divisor):
-    # Returns nearest x divisible by divisor
-    if isinstance(divisor, torch.Tensor):
-        divisor = int(divisor.max())  # to int
-    return math.ceil(x / divisor) * divisor
 class BaseModel(nn.Module):
     # YOLOv5 base model
     def forward(self, x, profile=False, visualize=False):
@@ -94,7 +89,6 @@ class Detect(nn.Module):
         grid = torch.stack((xv, yv), 2).expand(shape) - 0.5  # add grid offset, i.e. y = 2.0 * x - 0.5
         anchor_grid = (self.anchors[i] * self.stride[i]).view((1, self.na, 1, 1, 2)).expand(shape)
         return grid, anchor_grid
-
 class Segment(Detect):
     # YOLOv5 Segment head for segmentation models
     def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
@@ -110,66 +104,6 @@ class Segment(Detect):
         p = self.proto(x[0])
         x = self.detect(self, x)
         return (x, p) if self.training else (x[0], p) if self.export else (x[0], p, x[1])
-def parse_model(d,ch):
-
-    anchors, nc, gd, gw, act = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple'], d.get('activation')
-    if act:
-        Conv.default_act = eval(act)
-    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors
-    no = na * (nc + 5)
-
-    layers , save ,c2 = [] , [], [-1]
-    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']): 
-        m = eval(m) if isinstance(m, str) else m
-
-        for j,a in enumerate(args):
-            with contextlib.suppress(NameError):
-                args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-        
-        n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
-
-        if m in {
-                Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
-                BottleneckCSP, C3, C3TR, C3SPP, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x}:
-            c1 , c2 = ch[f],args[0]
-
-            if c2 != no:
-                c2 = make_divisible(c2*gw,8)
-            args = [c1,c2,*args[1:]]
-
-            if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:
-                args.insert(2, n)  # number of repeats
-                n = 1
-        elif m is nn.BatchNorm2d:
-            args = [ch[f]]
-        elif m is Concat:
-            c2 = sum(ch[x] for x in f)
-        # TODO: channel, gw, gd
-        elif m in {Detect, Segment}:
-            args.append([ch[x] for x in f])
-            if isinstance(args[1], int):  # number of anchors
-                args[1] = [list(range(args[1] * 2))] * len(f)
-            if m is Segment:
-                args[3] = make_divisible(args[3] * gw, 8)
-        elif m is Contract:
-            c2 = ch[f] * args[0] ** 2
-        elif m is Expand:
-            c2 = ch[f] // args[0] ** 2
-        else:
-            c2 = ch[f]
-        
-        m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)
-        t = str(m)[8:-2].replace("__main__","")
-        np = sum(x.numel() for x in m_.parameters())
-        m_.i, m_.f, m_.type, m_.np = i, f, t, np
-        layers.append(m_)
-        if i == 0:
-            ch = []
-        ch.append(c2)
-    return nn.Sequential(*layers)
-
-
-
 class DetectionModel(BaseModel):
     # YOLOv5 detection model
     def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
